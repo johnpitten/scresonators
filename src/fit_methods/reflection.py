@@ -11,7 +11,7 @@ class ReflectionMode(FitMethod):
     @staticmethod
     def func(f, Q, Qc, f0):
         """Reflection mode fit function."""
-        return 1-(2*Q/Qc)/(1-2j*Q*(f-f0)/f0)
+        return 1-(2*Q/Qc)/(1+2j*Q*(f-f0)/f0)
 
     @staticmethod
     def fit_function(f, params):
@@ -19,7 +19,7 @@ class ReflectionMode(FitMethod):
         Qc = params['Qc'].value
         f0 = params['f0'].value
 
-        return 1-(2*Q/Qc)/(1-2j*Q*(f-f0)/f0)
+        return 1-(2*Q/Qc)/(1+2j*Q*(f-f0)/f0)
 
     
     def create_model(self):
@@ -47,9 +47,9 @@ class ReflectionMode(FitMethod):
                 chiFunction[n] = 1  # set to one if |dS/df| is above the cutoff at this point
         linewidth = np.dot(chiFunction[:-1], np.diff(fdata))
 
-        f_c = fdata[np.argmax(gradSmagnitude) + 3]  # uncertainties can't be calculated when this guess is too good!!!
+        f_c = fdata[np.argmax(gradSmagnitude) + 5]  # uncertainties can't be calculated when this guess is too good!!!
         Q_guess = 2 * f_c / (linewidth)
-        print(f'Q_guess: {Q_guess}')
+        #print(f'Q_guess: {Q_guess}')
         Qc_guess = Q_guess / r
 
         # Create an lmfit.Parameters object to store initial guesses

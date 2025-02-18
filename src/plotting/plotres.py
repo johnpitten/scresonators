@@ -1,9 +1,13 @@
 import matplotlib.pyplot as plt
 import skrf as rf
 import numpy as np
+from .labels import display, unit
 
-#It might make sense to package all this into a subclass of matplotlib.Figure
+#TODO: It might make sense to package all this into a subclass of matplotlib.Figure
 #TODO: need to improve label placement when specified by user
+
+#TODO: move these dicts to their own file
+
 
 def makeSummaryFigure():
     fig = plt.figure(layout='constrained')
@@ -11,7 +15,7 @@ def makeSummaryFigure():
     fig.parameterAnnotation = None
 
     ax['mag'].sharex(ax['phase'])
-    ax['phase'].set_xlabel('frequency (GHz)')
+    ax['phase'].set_xlabel('Frequency (GHz)')
     ax['mag'].tick_params(labelbottom = False)
     ax['mag'].set_aspect('auto')
     ax['phase'].set_aspect('auto')
@@ -43,7 +47,7 @@ def phase(fdata, sdata, **kwargs):
     ax = AxesListToDict(ax_list)
 
     ax['phase'].plot(fdata, np.unwrap(np.angle(sdata)), **kwargs)
-    ax['phase'].set_ylabel('phase (rad)')
+    ax['phase'].set_ylabel('Phase (rad.)')
     return fig, ax
 
 def summaryPlot(fdata, sdata, **kwargs):
@@ -59,7 +63,7 @@ def summaryPlot(fdata, sdata, **kwargs):
     ax['mag'].plot(fdata, 20*np.log10(np.abs(sdata)), **kwargs)
     ax['mag'].set_ylabel('Magnitude (dB)')
     ax['phase'].plot(fdata, np.unwrap(np.angle(sdata)), **kwargs)
-    ax['phase'].set_ylabel('phase (rad)')
+    ax['phase'].set_ylabel('Phase (rad.)')
     return fig, ax
 
 def annotate(annotation_text: str):
@@ -67,8 +71,8 @@ def annotate(annotation_text: str):
     ax_list = fig.get_axes()
     ax = AxesListToDict(ax_list)
 
-    if fig.parameterAnnotation == None:
-        fig.parameterAnnotation = ax['smith'].annotate(str(annotation_text), (-1, -1.2), annotation_clip=False)
+    if fig.parameterAnnotation is None:
+        fig.parameterAnnotation = ax['smith'].annotate(str(annotation_text), (-1, -1.25), annotation_clip=False)
     else:
         text = fig.parameterAnnotation.get_text()
         text = text + str(annotation_text)
@@ -86,17 +90,18 @@ def annotateParam(param):
     stderr = param.stderr
     val, stderr = round_measured_value(val, stderr)
 
-    #TODO: add a dictionary to convert parameter names to LaTeX symbols
-    if fig.parameterAnnotation == None:
-        fig.parameterAnnotation = ax['smith'].annotate(f'{param.name}= {val} +/- {stderr}', (-1,-1.2), annotation_clip=False)
+    #TODO: make this call the annotate() function
+    if fig.parameterAnnotation is None:
+        fig.parameterAnnotation = ax['smith'].annotate(display[param.name] + f' = {val} '+r'$\pm$'+f' {stderr} '+unit[param.name], (-1,-1.25),
+                                                       annotation_clip=False)
     else:
         text = fig.parameterAnnotation.get_text()
-        text = text+str('\n'+f'{param.name}= {val} +/- {stderr}')
+        text = text+str('\n'+ display[param.name] +f' = {val} '+r'$\pm$'+ f' {stderr} '+unit[param.name])
         fig.parameterAnnotation.set_text(text)
 
         x_pos, y_pos = fig.parameterAnnotation.get_position()
-        fig.parameterAnnotation.set_position((x_pos, y_pos-0.125))
-        #TODO: query the font height & line spacing for the y-position adjustment
+        fig.parameterAnnotation.set_position((x_pos, y_pos-0.14))
+        #TODO: query the font size & line spacing for the y-position adjustment
 
 
 def displayAllParams(parameters):
@@ -113,6 +118,7 @@ def AxesListToDict(ax_list):
     return ax_dict
 
 #TODO: more careful verification of this function -- Google's AI gave it to me quicker than stackexchange
+#TODO: fix bug: significant trailing zeros of the value are not displayed
 def round_measured_value(value, stdev):
     '''
     Rounding for measured quantities

@@ -1,7 +1,7 @@
 import numpy as np
 import lmfit
 
-from utils import *
+from ..utils import *
 from .fit_method import FitMethod
 from ..utils import find_circle
 from scipy.ndimage import gaussian_filter
@@ -13,7 +13,7 @@ class DCM(FitMethod):
     @staticmethod
     def func(f, Q, Qc, f0, phi):
         """DCM fit function."""
-        return 1-(Q*np.exp(-1j*phi)/Qc)/(1+2j*Q*(f-f0)/f0)
+        return 1-((Q*np.exp(-1j*phi))/Qc)/(1+2j*Q*(f-f0)/f0)
 
     @staticmethod
     def fit_function(f, params):
@@ -78,10 +78,11 @@ class DCM(FitMethod):
 
 
         gradSmagnitude = np.abs(gradS)
-        f_c = fdata[np.argmax(gradSmagnitude)+3]#uncertainties can't be calculated when this guess is too good!!!
+        f_c = fdata[np.argmax(gradSmagnitude)+6]#uncertainties can't be calculated when this guess is too good!!!
         Q_guess = 2*f_c/(linewidth)
-        print(f'Q_guess: {Q_guess}')
+        #print(f'Q_guess: {Q_guess}')
         Qc_guess = Q_guess/(2*r)
+        #print(f'Qc_guess: {Qc_guess}')
 
         # Create an lmfit.Parameters object to store initial guesses
         params = lmfit.Parameters()
@@ -103,7 +104,8 @@ class DCM(FitMethod):
         inverseQi = params['inverseQi'].value
         params.add('Qi', value = 1/inverseQi)
         #if you get an error that points here check that all your parameters varied during the fit, set verbose = True
-        params['inverseQi'].stderr = np.sqrt((params['Q'].stderr/Q**2)**2+(np.sin(phi)*params['phi'].stderr/Qc)**2+(np.cos(phi)*params['Qc'].stderr/Qc**2)**2)
+        params['inverseQi'].stderr = np.sqrt((params['Q'].stderr/Q**2)**2+(np.sin(phi)*params['phi'].stderr/Qc)**2+
+                                             (np.cos(phi)*params['Qc'].stderr/Qc**2)**2)
         params['Qi'].stderr = params['inverseQi'].stderr/inverseQi**2
         return params
 

@@ -6,16 +6,16 @@ def DCM_S21(freqs, f0, Q, Qc, phi):
 
 #generate sample data
 f0 = 4.5 #GHz
-Qi = 400000
-Qc = 200000
-phi = 0
+Qi = 100000
+Qc = 150000
+phi = 0.1
 Qtot = 1/(1/Qi+np.cos(phi)/Qc)
 linewidth = 2*f0/(Qtot)
-delay =  80#ns
+delay =  0#ns
 
 
-fstart = f0-15*linewidth
-fstop = f0+15*linewidth
+fstart = f0-10*linewidth
+fstop = f0+10*linewidth
 npoints = 501
 freqs = np.linspace(fstart, fstop, npoints)
 

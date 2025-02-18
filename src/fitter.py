@@ -7,7 +7,10 @@ from scipy.stats import linregress
 from scipy.interpolate import interp1d
 from .utils import *
 from math import fmod
+from warnings import warn
+import skrf as rf
 
+#TODO: Can't we just have the Fitter inherit all the methods of the fit method class?
 
 class Fitter:
     def __init__(self, fit_method=None, **kwargs):
@@ -18,17 +21,12 @@ class Fitter:
         """
         if fit_method is None or not hasattr(fit_method, 'func'):
             raise ValueError("A fitting method with a valid 'func' attribute must be provided.")
-        
+        #TODO: kwargs should be passed to Resonator.fit(), not Resonator.set_fitting_strategy()
         self.fit_method = fit_method
         self.remove_elec_delay = kwargs.get('remove_delay', True)
         self.preprocess_circle = kwargs.get('preprocess_circle', True)
         self.preprocess_linear = kwargs.get('preprocess_linear', False)
-        self.normalize = kwargs.get('normalize', 4)
-        self.MC_rounds = kwargs.get('MC_rounds', 1000)
-        self.MC_step_const = kwargs.get('MC_step_const', 0.05)
-        self.MC_weight = kwargs.get('MC_weight', False)
-        self.MC_fix = kwargs.get('MC_fix', [])
-        self.databg = kwargs.get('databg', None)
+        self.databg = kwargs.get('databg', None)#remove?
         self.plot_results = kwargs.get('plotstyle', None)#for later implementation of optional plotting post fitting
         self.delay_guess = kwargs.get('delay_guess', None)
         self.Ql_guess = None
@@ -36,9 +34,10 @@ class Fitter:
         self.theta_0 = None
         self.phi = None
         self.off_res_point = kwargs.get('off_res_point', 1+0*1j)
+        self.init_params = None
+        self.fitResult = None
 
-
-    def fit(self, fdata, sdata, manual_init=None, verbose=False):
+    def fit(self, fdata, sdata, manual_init=None, verbose=False) -> lmfit.model.ModelResult:
         """Fit resonator data using the provided method and lmfit's Model fit"""
         #fdata: numpy array of the frequency data
         #sdata: complex valued numpy array of the scattering parameter data
@@ -51,127 +50,39 @@ class Fitter:
             #this feature is untested
             sdata = self.background_removal(sdata)
         if self.preprocess_linear == True:
-            #TODO: this step needs fixing
-            sdata, _, _, _, _ = self.preprocess_linear(fdata, sdata, self.normalize)
+            sdata = preprocess_linear(fdata, sdata)
+            #TODO: need better variable names
         if self.remove_elec_delay == True:
-            delay = self.find_delay(fdata, sdata)
+            #TODO: replace with the utils function
+            delay = self.initial_guess_delay(fdata, sdata)
             sdata = remove_delay(fdata, sdata, delay)
         if self.preprocess_circle == True:
             #rotate and scale the off-resonant point to a prescribed anchor point
             sdata = self.anchor_to_point(fdata, sdata)
 
-
-
-
-
-
-        ##############################################################################
+        ######################################
         #Initial guess for fitting parameters
-        ##############################################################################
+        ######################################
         # Setup the initial parameters or use provided manual_init
         if manual_init:
-            params = self.manual_init
+            params = manual_init
         else:
-            params = self.fit_method.find_initial_guess(self = self.fit_method ,fdata = fdata,sdata = sdata)
             #very weird that self = self.fit_method needs to be passed
-
+            params = self.fit_method.find_initial_guess(self = self.fit_method, fdata = fdata, sdata = sdata)
+            self.init_params = params
 
         #####################################################
         #The actual fit, implemented with the lmfit package
         #####################################################
-        model = self.fit_method.create_model(self = self.fit_method)
-        #this creates an lmfit.Model() object defined by the FitMethod
-        result = model.fit(sdata, params, f=fdata, method='leastsq') #lmfit.Model.fit(), not Fitter.fit()
-        if verbose: print(result.fit_report())
 
-        
-        # Using Monte Carlo to explore parameter space if enabled
-        #may want to delete this
-        if self.MC_weight:
-            emcee_kwargs = {
-                'steps': self.MC_rounds,
-                'thin':10,
-                'burn': int(self.MC_rounds * 0.3),
-                'is_weighted': self.MC_weight,
-                'workers': 1
-            }
-            emcee_result = model.fit(data=sdata, params=result.params, x=fdata, method='emcee', fit_kws=emcee_kwargs)
-            if verbose:
-                print(emcee_result.fit_report())
-            return emcee_result.params
+        #TODO: fit_procedure() needs to return a list or dict of ModelResults if there were multiple fits
+        #TODO: helper function which grabs the resonator params from the list or dict
+        result, intermediate_results = self.fit_method.fit_procedure(self = self.fit_method, fdata = fdata, sdata = sdata, params = params)
+        #if verbose: print(result.fit_report())
+        self.fitResult = result
 
-        params = self.fit_method.extractQi(self = self.fit_method, params = result.params)
-        return params
-    
-    
-    def preprocess_circle(self, fdata: np.ndarray, sdata: np.ndarray):
-        """
-        Data Preprocessing using Probst method for cable delay removal and normalization.
 
-        Depreciated.
-
-        Args:
-            fdata (np.ndarray): The frequency data.
-            sdata (np.ndarray): The complex S21 data to preprocess.
-
-        Returns:
-            np.ndarray: The preprocessed and normalized complex S21 data.
-        """
-
-        # Remove cable delay
-        delay = self.find_delay(fdata, sdata)
-        z_data = remove_delay(fdata, sdata, delay)
-
-        # Calibrate and normalize
-        delay_remaining, a, alpha, theta, phi, fr, Ql = self.calibrate(fdata, z_data)
-        z_norm = normalize(fdata, z_data, delay_remaining, a, alpha)
-
-        return z_norm
-    
-    
-    def preprocess_linear(self, xdata: np.ndarray, ydata: np.ndarray, normalize: int):
-        """
-        Preprocesses S21 data linearly. Removes cable delay and normalizes 
-        phase/magnitude of S21 by linear fit of a specified number of endpoints.
-
-        Args:
-            xdata (np.ndarray): The frequency data.
-            ydata (np.ndarray): The complex S21 data to preprocess.
-            normalize (int): Number of endpoints to use for normalization.
-
-        Returns:
-            tuple: Preprocessed S21 data, phase slope, phase intercept,
-                   magnitude slope, and magnitude intercept.
-        """
-        if normalize * 2 > len(ydata):
-            raise ValueError(
-                "Not enough points to normalize. Please decrease the 'normalize' value or include more data points near resonance.")
-
-        # Unwrap phase for linear preprocessing
-        phase = np.unwrap(np.angle(ydata))
-
-        # Normalize phase using linear fit
-        slope, intercept, _, _, _ = linregress(
-            np.append(xdata[:normalize], xdata[-normalize:]),
-            np.append(phase[:normalize], phase[-normalize:])
-        )
-
-        # Adjust phase to remove cable delay and rotate off-resonant point to (1, 0i)
-        adjusted_phase = phase - (slope * xdata + intercept)
-        y_adjusted = np.abs(ydata) * np.exp(1j * adjusted_phase)
-
-        # Normalize magnitude using linear fit
-        y_db = 20 * np.log10(np.abs(ydata))
-        mag_slope, mag_intercept, _, _, _ = linregress(
-            np.append(xdata[:normalize], xdata[-normalize:]),
-            np.append(y_db[:normalize], y_db[-normalize:])
-        )
-        adjusted_magnitude = 10 ** ((y_db - (mag_slope * xdata + mag_intercept)) / 20)
-
-        preprocessed_data = adjusted_magnitude * np.exp(1j * adjusted_phase)
-
-        return preprocessed_data, slope, intercept, mag_slope, mag_intercept
-    
+        return result, intermediate_results
 
     def background_removal(self, linear_amps: np.ndarray, phases: np.ndarray):
         """
@@ -206,11 +117,12 @@ class Fitter:
         # Return corrected data as complex S21 values
         return np.multiply(linear_amps_corrected, np.exp(1j * phases_corrected))
 
+
     def find_delay(self, fdata: np.ndarray, sdata: np.ndarray):
         """
         Modified version of the Criclefit method described in Probst.
 
-        Adjusts electrical delay such that the offset phase most closely fits an arctangent.
+        Adjusts electrical delay such that the offset phase most closely fits an arctangent -- works poorly
 
         Args:
             fdata: numpy array of the frequency data
@@ -285,9 +197,12 @@ class Fitter:
 
         return delay_guess
 
+
     def initial_guess_delay(self, fdata: np.ndarray, sdata: np.ndarray):
         '''
         Just fit the phase while discarding data in the linewidth.
+
+        Messy -- needs cleaning up -JP
 
         Args:
             fdata: numpy array of the frequency data
@@ -299,9 +214,18 @@ class Fitter:
         filtered_data = gaussian_filter(sdata, sigma=3)  # sigma may need to be changed for noisy data
         gradS = np.gradient(filtered_data, fdata)
         gradSmagnitude = np.abs(gradS)
-
-        chiFunction = partitionFrequencyBand(fdata, gradS, keep = 'above', cutoff = 0.05)
         fc_index = np.argmax(gradSmagnitude)
+        fc = fdata[fc_index]
+        #TODO: instead of using a cutoff, first estimate the linewidth, then discard data within n linewidths
+        #or simply identify f0, and discard data within fspan/2 of f0
+        guess_params = self.fit_method.find_initial_guess(self = self.fit_method ,fdata = fdata,sdata = sdata)
+        linewidth = 2*fc/guess_params['Q']
+
+        chiFunction = np.zeros(len(fdata))
+        for n in range(len(chiFunction)):
+            if np.abs(fdata[n]-fc) < 6*linewidth:
+                chiFunction[n] = 1
+
 
         freq_arrays = np.split(fdata, [fc_index])
         data_arrays = np.split(sdata, [fc_index])
@@ -319,11 +243,16 @@ class Fitter:
             trimmed_data = np.delete(data_arrays[n], trim)
 
             #fit trimmed freq and data
+            #TODO: check the r**2 of these fits and warn the user if they're below 0.9
             trimmed_phase = np.unwrap(np.angle(trimmed_data))
             lrg_result[n] = linregress(trimmed_freq[n], trimmed_phase)
             delay_guess = lrg_result[n].slope / (-2 * np.pi)
             delay_fit = np.append(delay_fit, delay_guess)
         avg_delay_guess = (delay_fit[0]+delay_fit[1])/2
+        #warm user if r^2 <0.9
+        for n in range(2):
+            if lrg_result[n].rvalue**2 < 0.9:
+                warn(f'low r-squared in delay fit: {lrg_result[n].rvalue**2}')
 
         #plot the fits as a check
         '''
@@ -332,15 +261,95 @@ class Fitter:
         plt.plot(trimmed_freq[0], lrg_result[0].intercept+lrg_result[0].slope*trimmed_freq[0], color = 'k', linestyle = 'dashed')
         plt.plot(trimmed_freq[1], lrg_result[1].intercept + lrg_result[1].slope * trimmed_freq[1], color='k',
                  linestyle='dashed')
+        #plt.axvline(fc+6*linewidth)
+        #plt.axvline(fc-6*linewidth)
+        plt.ylabel('Phase (rad.)')
+        plt.xlabel('Frequency')
         plt.show()
         '''
 
-        print(f'initial delay guess: {avg_delay_guess}')
+
+        #print(f'initial delay guess: {avg_delay_guess}')
         return avg_delay_guess
+
+    #TODO: needs testing
+    def find_linear_sigma(self, fdata: np.ndarray, sdata: np.ndarray):
+        '''
+        Just fit the magnitude (dB) while discarding data in the linewidth.
+
+        Supposing S ~ exp(-2 pi sigma f), we are trying to extract sigma
+
+        Args:
+            fdata: numpy array of the frequency data
+            sdata: numpy array of the scattering data
+
+        Returns:
+            delay: float representing the sigma in the model above
+        '''
+        filtered_data = gaussian_filter(sdata, sigma=3)  # sigma may need to be changed for noisy data
+        gradS = np.gradient(filtered_data, fdata)
+        gradSmagnitude = np.abs(gradS)
+        fc_index = np.argmax(gradSmagnitude)
+        fc = fdata[fc_index]
+        #TODO: instead of using a cutoff, first estimate the linewidth, then discard data within n linewidths
+        #or simply identify f0, and discard data within fspan/2 of f0
+        guess_params = self.fit_method.find_initial_guess(self = self.fit_method ,fdata = fdata,sdata = sdata)
+        linewidth = 2*fc/guess_params['Q']
+
+        chiFunction = np.zeros(len(fdata))
+        for n in range(len(chiFunction)):
+            if np.abs(fdata[n]-fc) < 6*linewidth:
+                chiFunction[n] = 1
+
+
+        freq_arrays = np.split(fdata, [fc_index])
+        data_arrays = np.split(sdata, [fc_index])
+        chi_arrays = np.split(chiFunction, [fc_index])
+
+        #TODO: trim data and perform two separate fits, average values for delay_guess
+
+        sigma_fit = []
+        lrg_result = [0,0]
+        trimmed_freq = [0,0]
+        for n in range(2):
+            #trim the data
+            trim = np.nonzero(chi_arrays[n])
+            trimmed_freq[n] = np.delete(freq_arrays[n], trim)
+            trimmed_data = np.delete(data_arrays[n], trim)
+
+            #fit trimmed freq and data
+            #TODO: check the r**2 of these fits and warn the user if they're below 0.9
+            trimmed_mag = 20*np.log10(np.abs(trimmed_data))
+            lrg_result[n] = linregress(trimmed_freq[n], trimmed_mag)
+            sigma = -np.log(10) * lrg_result[n].slope / (40*np.pi)
+            sigma_fit = np.append(sigma_fit, sigma)
+        avg_sigma = (sigma_fit[0]+sigma_fit[1])/2
+        #warm user if r^2 <0.9
+        for n in range(2):
+            if lrg_result[n].rvalue**2 < 0.9:
+                warn(f'low r-squared in delay fit: {lrg_result[n].rvalue**2}')
+
+        #plot the fits as a check
+        '''
+        import matplotlib.pyplot as plt
+        plt.plot(fdata, 20*np.log10(np.abs(sdata)))
+        plt.plot(trimmed_freq[0], lrg_result[0].intercept+lrg_result[0].slope*trimmed_freq[0], color = 'k', linestyle = 'dashed')
+        plt.plot(trimmed_freq[1], lrg_result[1].intercept + lrg_result[1].slope * trimmed_freq[1], color='k',
+                 linestyle='dashed')
+        #plt.axvline(fc+6*linewidth)
+        #plt.axvline(fc-6*linewidth)
+        plt.ylabel('Magnitude (dB)')
+        plt.xlabel('Frequency')
+        plt.show()
+        '''
+
+
+        #print(f'initial delay guess: {avg_delay_guess}')
+        return avg_sigma
 
     def find_delay_circlefit(self, fdata: np.ndarray, sdata: np.ndarray):
         '''
-        Finds the electrical delay using the circle fit method described in Probst et al.
+        Finds the electrical delay using the circle fit method described in Probst et al. -- works poorly
 
         The delay is varied to minimize the deviation of the scattering data from an ideal circle in the complex plane.
         REVIEW OF SCIENTIFIC INSTRUMENTS 86, 024706 (2015). Results are unsatisfactory, but may be improved by adopting
@@ -357,7 +366,7 @@ class Fitter:
         phase_data = np.unwrap(np.angle(sdata))
         #the initial guess just needs to get the scale right, this should be good enough
         delay_guess = self.guess_delay(fdata, sdata)
-        print(f'delay initial guess: {delay_guess}')
+        #print(f'delay initial guess: {delay_guess}')
 
         # make an lmfit.Parameters object and add a single lmfit.Parameter object representing the electrical delay
         delay_params = lmfit.Parameters()
@@ -432,11 +441,13 @@ class Fitter:
             beta = fmod(self.theta_0+np.pi, np.pi)
             xc, yc, r = find_circle(np.real(sdata), np.imag(sdata))
             self.phi = fmod(np.pi - self.theta_0 + np.angle(xc+1j*yc), np.pi)
-            print(f'phi (preprocessing): {self.phi}')
+            #print(f'phi (preprocessing): {self.phi}')
             return xc+ 1j*yc+ r*np.exp(1j*beta)
         else:
             #this block is untested
             #TODO: fit the offset phase to an arctan (without delay, that is not the place for this function)
+            xc, yc, r = find_circle(np.real(sdata), np.imag(sdata))
+            zc = xc+1j*yc
             orpmodel = lmfit.Model(sloped_arctan)
             guess_params = self.fit_method.find_initial_guess(self=self.fit_method, fdata=fdata, sdata=sdata)
 
@@ -446,17 +457,17 @@ class Fitter:
             orparams.add(name = 'delay', value = 0, vary = False)
             orparams.add(name = 'theta_0', value = 0)
 
-            orp_results = orpmodel.fit(np.unwrap(np.angle(sdata)), orparams, f=fdata)
+            orp_results = orpmodel.fit(np.unwrap(np.angle(sdata-zc)), orparams, f=fdata)
             theta_0 = orp_results.params['theta_0'].value
             beta = fmod(theta_0 + np.pi, np.pi)
-            xc, yc, r = find_circle(np.real(sdata), np.imag(sdata))
+
             self.phi = fmod(np.pi - theta_0 + np.angle(xc + 1j * yc), np.pi)
-            print(f'phi (preprocessing): {self.phi}')
+            #print(f'phi (preprocessing): {self.phi}')
             return xc + 1j * yc + r * np.exp(1j * beta)
 
     def anchor_to_point(self, fdata: np.ndarray, sdata: np.ndarray, anchor_point = None):
         """
-        Rotates and scales the scattering data to send the off-resonant point to an anchor point (e.g. 1+0*1j).
+        Rotates and scales the scattering data to send the off-resonant point to an anchor point (e.g. 1+0j).
 
         Args:
             fdata: numpy array of the frequency data

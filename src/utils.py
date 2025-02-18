@@ -1,6 +1,11 @@
 import numpy as np
 import lmfit
+import matplotlib.pyplot as plt
 from scipy.linalg import eig
+from scipy.stats import linregress
+from scipy.ndimage import gaussian_filter
+from warnings import warn
+from math import fmod
 
 def find_nearest(array: np.ndarray, value: float) -> tuple:
     """
@@ -220,6 +225,208 @@ def partitionFrequencyBand(fdata: np.ndarray, GradS: np.ndarray, keep = 'above',
                 chiFunction[n] = 1  # set to one if |dS/df| is below the cutoff at this point
 
     return chiFunction
+
+def std_err_to_95pct(p: lmfit.Parameters):
+    '''
+    convert standard errors to 95% confidence intervals
+    '''
+    for key in p:
+        p[key].stderr = 1.96*p[key].stderr
+
+    return p
+
+def remove_linear_sigma(fdata, sdata, sigma):
+    return sdata*np.exp(2*np.pi*sigma*fdata)
+
+def preprocess_delay(fdata, sdata, display_fit = False):
+    '''
+    Standalone function to find and remove the electrical delay.
+
+    The "Chi function" is 1 close to resonance and zero away from resonance
+    '''
+    #smooth data and take derivative to remove asymmetry
+    filtered_data = gaussian_filter(sdata, sigma=3)  # sigma may need to be changed for noisy data
+    gradS = np.gradient(filtered_data, fdata)
+    gradSmagnitude = np.abs(gradS)
+    #estimate center frequency
+    fc_index = np.argmax(gradSmagnitude)
+    fc = fdata[fc_index]
+    #estimate linewidth -- count up the spans of adjacent frequency points that are close to resonance
+    chiFunction = partitionFrequencyBand(fdata, gradS)
+    linewidth = np.dot(chiFunction[:-1], np.diff(fdata))
+
+    #redefine the chi function to remove points farther away from fc for fitting
+    chiFunction = np.zeros(len(fdata))
+    for n in range(len(chiFunction)):
+        if np.abs(fdata[n] - fc) < 6 * linewidth:
+            chiFunction[n] = 1
+
+    freq_arrays = np.split(fdata, [fc_index])
+    data_arrays = np.split(sdata, [fc_index])
+    chi_arrays = np.split(chiFunction, [fc_index])
+
+    # TODO: trim data and perform two separate fits, average values for delay_guess
+
+    delay_fit = []
+    lrg_result = [0, 0]
+    trimmed_freq = [0, 0]
+    for n in range(2):
+        # trim the data
+        trim = np.nonzero(chi_arrays[n])
+        trimmed_freq[n] = np.delete(freq_arrays[n], trim)
+        trimmed_data = np.delete(data_arrays[n], trim)
+
+        # fit trimmed freq and data
+        # TODO: check the r**2 of these fits and warn the user if they're below 0.9
+        trimmed_phase = np.unwrap(np.angle(trimmed_data))
+        lrg_result[n] = linregress(trimmed_freq[n], trimmed_phase)
+        delay_guess = lrg_result[n].slope / (-2 * np.pi)
+        delay_fit = np.append(delay_fit, delay_guess)
+    avg_delay_guess = (delay_fit[0] + delay_fit[1]) / 2
+    # warm user if r^2 <0.9
+    for n in range(2):
+        if lrg_result[n].rvalue ** 2 < 0.9:
+            warn(f'low r-squared in delay fit: {lrg_result[n].rvalue ** 2}')
+
+    # plot the fits as a check
+    if display_fit == True:
+        plt.plot(fdata, np.unwrap(np.angle(sdata)))
+        plt.plot(trimmed_freq[0], lrg_result[0].intercept + lrg_result[0].slope * trimmed_freq[0], color='k',
+                 linestyle='dashed')
+        plt.plot(trimmed_freq[1], lrg_result[1].intercept + lrg_result[1].slope * trimmed_freq[1], color='k',
+                 linestyle='dashed')
+        # plt.axvline(fc+6*linewidth)
+        # plt.axvline(fc-6*linewidth)
+        plt.ylabel('Phase (rad.)')
+        plt.xlabel('Frequency')
+        plt.show()
+
+    #remove the delay and return processed data
+    new_sdata = remove_delay(fdata, sdata, avg_delay_guess)
+    return new_sdata
+
+def preprocess_linear(fdata, sdata, display_fit = False):
+    '''
+            Just fit the magnitude (dB) while discarding data in the linewidth.
+
+            Supposing S ~ exp(-2 pi sigma f), we are trying to extract sigma
+
+            Args:
+                fdata: numpy array of the frequency data
+                sdata: numpy array of the scattering data
+
+            Returns:
+                delay: float representing the sigma in the model above
+            '''
+    filtered_data = gaussian_filter(sdata, sigma=3)  # sigma may need to be changed for noisy data
+    gradS = np.gradient(filtered_data, fdata)
+    gradSmagnitude = np.abs(gradS)
+    # estimate center frequency
+    fc_index = np.argmax(gradSmagnitude)
+    fc = fdata[fc_index]
+    # estimate linewidth -- count up the spans of adjacent frequency points that are close to resonance
+    chiFunction = partitionFrequencyBand(fdata, gradS)
+    linewidth = np.dot(chiFunction[:-1], np.diff(fdata))
+
+    # redefine the chi function to remove points farther away from fc for fitting
+    chiFunction = np.zeros(len(fdata))
+    for n in range(len(chiFunction)):
+        if np.abs(fdata[n] - fc) < 6 * linewidth:
+            chiFunction[n] = 1
+
+    freq_arrays = np.split(fdata, [fc_index])
+    data_arrays = np.split(sdata, [fc_index])
+    chi_arrays = np.split(chiFunction, [fc_index])
+
+    # TODO: trim data and perform two separate fits, average values for delay_guess
+
+    sigma_fit = []
+    lrg_result = [0, 0]
+    trimmed_freq = [0, 0]
+    for n in range(2):
+        # trim the data
+        trim = np.nonzero(chi_arrays[n])
+        trimmed_freq[n] = np.delete(freq_arrays[n], trim)
+        trimmed_data = np.delete(data_arrays[n], trim)
+
+        # fit trimmed freq and data
+        trimmed_mag = 20 * np.log10(np.abs(trimmed_data))
+        lrg_result[n] = linregress(trimmed_freq[n], trimmed_mag)
+        sigma = -np.log(10) * lrg_result[n].slope / (40 * np.pi)
+        sigma_fit = np.append(sigma_fit, sigma)
+    avg_sigma = (sigma_fit[0] + sigma_fit[1]) / 2
+    # warm user if r^2 <0.9
+    for n in range(2):
+        if lrg_result[n].rvalue ** 2 < 0.9:
+            warn(f'low r-squared in linear background fit: {round(lrg_result[n].rvalue ** 2, 3)}')
+
+    # plot the fits as a check
+    if display_fit == True:
+        plt.plot(fdata, 20 * np.log10(np.abs(sdata)))
+        plt.plot(trimmed_freq[0], lrg_result[0].intercept + lrg_result[0].slope * trimmed_freq[0], color='k',
+                 linestyle='dashed')
+        plt.plot(trimmed_freq[1], lrg_result[1].intercept + lrg_result[1].slope * trimmed_freq[1], color='k',
+                 linestyle='dashed')
+        # plt.axvline(fc+6*linewidth)
+        # plt.axvline(fc-6*linewidth)
+        plt.ylabel('Magnitude (dB)')
+        plt.xlabel('Frequency')
+        plt.show()
+
+    new_sdata = remove_linear_sigma(fdata, sdata, avg_sigma)
+
+    return new_sdata/np.max(np.abs(new_sdata))
+
+def normalize(fdata, sdata, anchor_point = 1+1j*0):
+    orpmodel = lmfit.Model(sloped_arctan)
+    #from this we just need fr and approximate Ql
+    filtered_data = gaussian_filter(sdata, sigma=3)  # sigma may need to be changed for noisy data
+    gradS = np.gradient(filtered_data, fdata)
+    gradSmagnitude = np.abs(gradS)
+    # estimate center frequency
+    fc_index = np.argmax(gradSmagnitude)
+    fc = fdata[fc_index]
+    # estimate linewidth -- count up the spans of adjacent frequency points that are close to resonance
+    chiFunction = partitionFrequencyBand(fdata, gradS)
+    linewidth = np.dot(chiFunction[:-1], np.diff(fdata))
+    #DO the circlefit
+    xc, yc, r = find_circle(np.real(sdata), np.imag(sdata))
+    zc = xc + 1j*yc
+
+
+    orparams = lmfit.Parameters()
+    orparams.add(name='Ql', value=fc/linewidth)
+    orparams.add(name='fr', value=fc)
+    orparams.add(name='delay', value=0, vary=False)
+    orparams.add(name='theta_0', value=0)
+
+
+    #the sdata needs to be centered first
+    orp_results = orpmodel.fit(np.unwrap(np.angle(sdata-zc)), orparams, f=fdata)
+    # plt.plot(fdata, np.unwrap(np.angle(sdata-zc)))
+    # plt.plot(fdata, orpmodel.func(fdata, orparams['Ql'], orparams['fr'], orparams['delay'], orparams['theta_0']))
+    # plt.show()
+    theta_0 = orp_results.params['theta_0'].value
+    beta = fmod(theta_0 + np.pi, np.pi)
+
+    orp =  xc + 1j * yc + r * np.exp(1j * beta)
+    return anchor_point*sdata/orp
+
+def preprocess(fdata, sdata, **kwargs):
+    do_linear_preprocessing = kwargs.get('linear_preprocess', False)
+    delay_preprocessing = kwargs.get('preprocess_delay', True)
+    normalize_data = kwargs.get('normalize', True)
+    anchor_point = kwargs.get('anchor_point', 1+0*1j)
+
+    if do_linear_preprocessing:
+        sdata = preprocess_linear(fdata, sdata)
+    if delay_preprocessing:
+        sdata = preprocess_delay(fdata, sdata)
+    if normalize_data:
+        sdata = normalize(fdata, sdata, anchor_point)
+
+    return sdata
+
 
 
 #TODO: add an hpspace function to generate homophasal spacing of frequency points

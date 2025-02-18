@@ -31,7 +31,6 @@ class FitMethod(ABC):
         """
         pass
 
-    #TODO: Why are we using lmfit's Model class? It seems to only provide utility if we want to use non-standard weights
     @abstractmethod
     def create_model(self) -> lmfit.Model:
         """
@@ -41,3 +40,15 @@ class FitMethod(ABC):
             Model: object with minimizing methods
         """
         pass
+
+    #this method should be overwritten for conformal mapping methods
+    @abstractmethod
+    def fit_procedure(self, fdata, sdata, params):
+        model = self.create_model(self)#idk why but self needs to be passed explicitly here
+        result = model.fit(sdata, params, f=fdata, method='leastsq')
+        #TODO: should run the confidence interval finder at this point
+        return result, []
+
+    @abstractmethod
+    def off_res_point(self, params):
+        return 1+0*1j

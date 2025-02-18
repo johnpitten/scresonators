@@ -1,0 +1,21 @@
+display = dict()
+display['Q'] = 'Q'
+display['f0'] = r'$f_0$'
+display['Qc'] = r'$Q_c$'
+display['phi'] = r'$\phi$'
+display['Qi'] = r'$Q_i$'
+display['inverseQi'] = r'$Q_i^{-1}$'
+display['invQi'] = r'$Q_i^{-1}$'
+display['Ql'] = '$Q_\ell$'
+display['fr'] = r'$f_r$'
+
+unit = dict()
+unit['Q'] = ''
+unit['f0'] = 'GHz'
+unit['Qc'] = ''
+unit['phi'] = 'rad.'
+unit['Qi'] = ''
+unit['inverseQi'] = ''
+unit['invQi'] = ''
+unit['Ql'] = ''
+unit['fr'] = 'GHz'
